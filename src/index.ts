@@ -63,7 +63,7 @@ export class BetterDeepSeekBridgeService extends Service {
             res.end(JSON.stringify({
               active: true,
               version: '1.6.0',
-              bridge_build: '0.2.0-dshfix.2',
+              bridge_build: '0.2.0-dshfix.3',
               capabilities: ['filtered_sse', 'approvals', 'rag_inject', 'session_result'],
             }))
             return
@@ -252,11 +252,11 @@ export class BetterDeepSeekBridgeService extends Service {
 
   private handleCors(req: IncomingMessage, res: ServerResponse): boolean {
     if (this.config.enableCors !== false) {
-      // Only browser extensions may read responses. A web page gets no
-      // Access-Control-Allow-Origin at all, so its preflight is refused by the
-      // browser and it can neither read nor mutate.
+      // Only the bridge's own client may read responses. An unrelated web page
+      // gets no Access-Control-Allow-Origin at all, so its preflight is refused
+      // by the browser and it can neither read nor mutate.
       const origin = req.headers.origin
-      if (typeof origin === 'string' && this.isExtensionOrigin(origin)) {
+      if (typeof origin === 'string' && this.isBridgeOrigin(origin)) {
         res.setHeader('Access-Control-Allow-Origin', origin)
         res.setHeader('Vary', 'Origin')
       }
@@ -271,8 +271,21 @@ export class BetterDeepSeekBridgeService extends Service {
     return false
   }
 
-  private isExtensionOrigin(origin: string): boolean {
-    return /^(chrome|moz|safari-web)-extension:\/\//i.test(origin)
+  private isBridgeOrigin(origin: string): boolean {
+    // The extension calls the bridge from a content script
+    // (HarnessTaskCard.svelte), so the Origin of its requests is the PAGE origin
+    // (https://chat.deepseek.com), not chrome-extension://. Dropping that origin
+    // would break the extension; it does not reopen the hole, because an
+    // unrelated site has a different origin and cannot forge this one. Compare
+    // hostname rather than a string prefix, or https://chat.deepseek.com.evil.example
+    // would pass.
+    if (/^(chrome|moz|safari-web)-extension:\/\//i.test(origin)) return true
+    try {
+      const parsed = new URL(origin)
+      return parsed.protocol === 'https:' && parsed.hostname === 'chat.deepseek.com'
+    } catch {
+      return false
+    }
   }
 
   private isJsonRequest(req: IncomingMessage): boolean {
