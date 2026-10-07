@@ -1,7 +1,7 @@
 {
   "name": "dsh-better-deepseek",
   "description": "DeepSeek Harness bridge plugin for Better-DeepSeek Chrome extension integration (locally patched for DSH 0.2.0-rc.2)",
-  "version": "0.2.0-dshfix.1",
+  "version": "0.2.0-dshfix.2",
   "publishConfig": {
     "access": "public"
   },

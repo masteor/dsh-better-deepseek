@@ -37,6 +37,23 @@ export class BetterDeepSeekBridgeService extends Service {
         handler: async (req, res) => {
           if (this.handleCors(req, res)) return
 
+          if (req.method === 'POST' && !this.isJsonRequest(req)) {
+            // A JSON body can never be sent cross-origin as a "simple request", so
+            // requiring it forces every mutating call through a CORS preflight that
+            // the origin check above can refuse. Without this, a hostile page could
+            // reach session.create/session.prompt with a text/plain simple POST —
+            // the handler parses the body regardless of its declared type.
+            res.writeHead(415, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({
+              type: 'server-response',
+              result: {
+                ok: false,
+                error: { message: 'Content-Type must be application/json' },
+              },
+            }))
+            return
+          }
+
           const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)
           const pathname = url.pathname
 
@@ -46,7 +63,7 @@ export class BetterDeepSeekBridgeService extends Service {
             res.end(JSON.stringify({
               active: true,
               version: '1.6.0',
-              bridge_build: '0.2.0-dshfix.1',
+              bridge_build: '0.2.0-dshfix.2',
               capabilities: ['filtered_sse', 'approvals', 'rag_inject', 'session_result'],
             }))
             return
@@ -235,7 +252,14 @@ export class BetterDeepSeekBridgeService extends Service {
 
   private handleCors(req: IncomingMessage, res: ServerResponse): boolean {
     if (this.config.enableCors !== false) {
-      res.setHeader('Access-Control-Allow-Origin', '*')
+      // Only browser extensions may read responses. A web page gets no
+      // Access-Control-Allow-Origin at all, so its preflight is refused by the
+      // browser and it can neither read nor mutate.
+      const origin = req.headers.origin
+      if (typeof origin === 'string' && this.isExtensionOrigin(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin)
+        res.setHeader('Vary', 'Origin')
+      }
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
     }
@@ -245,6 +269,16 @@ export class BetterDeepSeekBridgeService extends Service {
       return true
     }
     return false
+  }
+
+  private isExtensionOrigin(origin: string): boolean {
+    return /^(chrome|moz|safari-web)-extension:\/\//i.test(origin)
+  }
+
+  private isJsonRequest(req: IncomingMessage): boolean {
+    const raw = req.headers['content-type']
+    if (typeof raw !== 'string') return false
+    return raw.split(';')[0]!.trim().toLowerCase() === 'application/json'
   }
 
   private async readJsonBody(req: IncomingMessage): Promise<any> {
