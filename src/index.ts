@@ -46,6 +46,7 @@ export class BetterDeepSeekBridgeService extends Service {
             res.end(JSON.stringify({
               active: true,
               version: '1.6.0',
+              bridge_build: '0.2.0-dshfix.1',
               capabilities: ['filtered_sse', 'approvals', 'rag_inject', 'session_result'],
             }))
             return
@@ -200,7 +201,7 @@ export class BetterDeepSeekBridgeService extends Service {
               const agent = this.ctx.agents.get(sessionId)
 
               if (agent) {
-                agent.cancel('user-request' as any)
+                agent.cancel({ kind: 'user' })
                 res.writeHead(200, { 'Content-Type': 'application/json' })
                 res.end(JSON.stringify({
                   type: 'server-response',
@@ -260,22 +261,9 @@ export class BetterDeepSeekBridgeService extends Service {
   }
 
   private setupEventListeners(): void {
-    // Durable session event stream (assistant chunks & full messages)
+    // Durable session event stream (committed assistant messages)
     this.ctx.effect(() => {
       return this.ctx.on('session/event', (session, event) => {
-        if (event.type === 'assistant/chunk') {
-          const chunkData = event.data as { text?: string; delta?: string; chunk?: { text?: string; delta?: string } }
-          const delta = chunkData.text ?? chunkData.delta ?? chunkData.chunk?.text ?? chunkData.chunk?.delta ?? ''
-          if (delta) {
-            const current = this.latestAssistantTextBySession.get(session.id) ?? ''
-            this.latestAssistantTextBySession.set(session.id, current + delta)
-            this.broadcast('assistant/chunk', {
-              sessionId: session.id,
-              delta,
-            })
-          }
-        }
-
         if (event.type === 'assistant/message') {
           const data = event.data as { message?: { content?: Array<{ type: string; text?: string }> } }
           const text = data.message?.content?.filter((c) => c.type === 'text').map((c) => c.text).join('') ?? ''
@@ -289,6 +277,26 @@ export class BetterDeepSeekBridgeService extends Service {
         }
       })
     }, 'better-deepseek: session event listener')
+
+    // Live assistant token stream.
+    // DSH >= 0.2.0 replaced the durable `assistant/chunk` session event with
+    // transient `agent/assistant-stream` frames. The outward SSE contract
+    // (`assistant/chunk` carrying { sessionId, delta }) is deliberately kept
+    // unchanged, so the Better-DeepSeek extension needs no update.
+    this.ctx.effect(() => {
+      return this.ctx.on('agent/assistant-stream', ({ agent, frame }) => {
+        if (frame.type !== 'chunk' || frame.chunk.type !== 'text-delta') return
+        const delta = frame.chunk.text
+        if (!delta) return
+        const sessionId = agent.id
+        const current = this.latestAssistantTextBySession.get(sessionId) ?? ''
+        this.latestAssistantTextBySession.set(sessionId, current + delta)
+        this.broadcast('assistant/chunk', {
+          sessionId,
+          delta,
+        })
+      })
+    }, 'better-deepseek: assistant stream listener')
 
     // Tool execution waterfalls (must call next() to delegate!)
     this.ctx.effect(() => {
